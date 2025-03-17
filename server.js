@@ -21,6 +21,8 @@ const io = require('socket.io')(server, {
   }
 });
 
+const emailRegex = /^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/;
+
 mongoose.connect(DATABASE_URL)
     .then(() => console.log("Connected to MongoDB"))
     .catch((error) => console.log("Failed to connect to MongoDB", error));
@@ -45,9 +47,16 @@ const messageSchema = new mongoose.Schema({
   time: { type: String, required: true },
 });
 
+const listSchema = new mongoose.Schema({
+  email: { type: String, required: true },
+  date: { type: String, required: true },
+  list: [],
+});
+
 const Project = mongoose.model("Project", projectSchema,"projects")
 const User = mongoose.model("User", userSchema)
 const Message = mongoose.model("Message", messageSchema)
+const List = mongoose.model("List", listSchema)
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -102,10 +111,10 @@ app.post("/api/createProject", async (req, res) => {
   if(!name || !description){
     return res.status(400).json({ message: "Please enter all fields"});
   }
-  //Make sure added users are added twice and that it's not the creator
+  //Make sure added users are not added twice and that it's not the creator
   const uniqueUsers = [];
   users.forEach( v => {
-    if( !(v == email || uniqueUsers.indexOf(v) != -1)){
+    if( !(v == email || uniqueUsers.indexOf(v) != -1) && emailRegex.test(v)){
       uniqueUsers.push(v);
     } 
   });
@@ -124,6 +133,41 @@ app.post("/api/createProject", async (req, res) => {
     return res.status(500).json({ message: "Error creating project", error: error.message });
   }
 
+});
+
+app.post("/api/getList", async (req, res) => {
+  const {date, email} = req.body;
+  try {
+    const toDoList = await List.findOne({ date, email });
+    res.status(200).json({ message: "List retreived sucessfully", toDoList});
+  } catch (err) {
+    return res.status(500).json({ message: "Error retrieving list", error: err.message });
+  }
+});
+
+app.post("/api/setList", async (req, res) => {
+  const {date, email, list} = req.body;
+  try {
+    //check if list exists
+    const toDoList = await List.findOne({ date, email });
+    if (toDoList){
+        //Update existing list
+        const ret = await List.updateOne({ date, email }, { list: list });
+        if (ret.modifiedCount != 0){
+          res.status(200).json({ message: "List updated sucessfully"});
+        } else{
+          res.status(500).json({ message: "List couldn't be updated"});
+        }
+    } else {
+        //create new list
+        const newList = new List({ date, email, list });
+        await newList.save();
+        res.status(201).json({ message: "To-Do List created successfully"});
+    }
+  }
+  catch (err){
+    res.status(500).json({ message: "Error saving changes to the to-do list", error: err.message});
+  }
 });
 
 app.post("/api/getProjects", async (req, res) => {
@@ -186,14 +230,20 @@ app.post("/api/leaveProject", async (req, res) => {
 });
 
 app.post("/api/addUserToProject", async (req, res) => {
-  const {email,_id } = req.body;
+  const {email, _id } = req.body;
+  //validate email
+  if(!emailRegex.test(email)){ 
+    res.status(500).json({ message: "Invalid Email"});
+    return;
+  }
 
   try{
-    //check if user in
+    //check if user in or
     const project = await Project.findOne({_id});
     const index = project.users.indexOf(email);
-    if(index != -1){
+    if(index != -1 || email == project.email){
       res.status(500).json({ message: "User already in project"});
+      return;
     }
     //add user to project
     const ret = await Project.updateOne({_id}, {$push: {users: email}});
@@ -203,8 +253,8 @@ app.post("/api/addUserToProject", async (req, res) => {
       res.status(500).json({ message: "User couldn't be added"});
     }
     
-  } catch (error) {
-    return res.status(500).json({ message: "Error deleting project", error: error.message });
+  } catch (error) { 
+    return res.status(500).json({ message: "Error adding user to project", error: error.message });
   }
 });
 
